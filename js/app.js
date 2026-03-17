@@ -238,7 +238,7 @@ function App(props) {
         localStats.attempts[1] = 0;
         localStats.attempts[2] = 29;
         localStats.attempts[3] = 158;
-        localStats.attempts[4] = issueNumber - 334;
+        localStats.attempts[4] = issueNumber - 333;
         localStats.attempts[5] = 107;
         localStats.attempts[6] = 9;
         setStats(localStats);
