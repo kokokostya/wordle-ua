@@ -233,8 +233,8 @@ function App(props) {
         var issueNumber = getIssueNumber(6);
         localStats.games = issueNumber - 29;
         localStats.won = issueNumber - 31;
-        localStats.streak = issueNumber - 31;
-        localStats.maxStreak = issueNumber - 31;
+        localStats.streak = issueNumber - 180;
+        localStats.maxStreak = issueNumber - 180;
         localStats.attempts[1] = 0;
         localStats.attempts[2] = 29;
         localStats.attempts[3] = 158;
