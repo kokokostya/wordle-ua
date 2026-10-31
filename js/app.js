@@ -229,18 +229,18 @@ function App(props) {
       ignoreLettersLimit: true
     });
     if (localUID == "lw6indui1tkixs0y0") {
-      if (currentEdition.lettersLimit == 5 && localStats.games < 827) {
+      if (currentEdition.lettersLimit == 5 && localStats.games < 864) {
         // let issueNumber = getIssueNumber(5)
-        localStats.games = 826;
-        localStats.won = 823;
-        localStats.streak = 256;
-        localStats.maxStreak = 256;
-        localStats.attempts[1] = 11;
+        localStats.games = 863;
+        localStats.won = 860;
+        localStats.streak = 293;
+        localStats.maxStreak = 293;
+        localStats.attempts[1] = 14;
         localStats.attempts[2] = 30;
         localStats.attempts[3] = 116;
-        localStats.attempts[4] = 389;
-        localStats.attempts[5] = 222;
-        localStats.attempts[6] = 55;
+        localStats.attempts[4] = 408;
+        localStats.attempts[5] = 236;
+        localStats.attempts[6] = 56;
         setStats(localStats);
         saveToLocalStorage("stats", localStats);
       }
