@@ -137,17 +137,17 @@ function App(props) {
     // Fix individual user's stats
     const localUID = tryLoadingFromLocalStorage("UID", null, {skipSetting: true, ignoreLettersLimit: true});
     if (localUID == "lw6indui1tkixs0y0") {
-      if (currentEdition.lettersLimit == 5 && localStats.games < 866) {
+      if (currentEdition.lettersLimit == 5 && localStats.games < 868) {
         // let issueNumber = getIssueNumber(5)
-        localStats.games = 865;
-        localStats.won = 862;
-        localStats.streak = 295;
-        localStats.maxStreak = 295;
+        localStats.games = 867;
+        localStats.won = 865;
+        localStats.streak = 297;
+        localStats.maxStreak = 297;
         localStats.attempts[1] = 14;
         localStats.attempts[2] = 30;
         localStats.attempts[3] = 116;
         localStats.attempts[4] = 408;
-        localStats.attempts[5] = 238;
+        localStats.attempts[5] = 241;
         localStats.attempts[6] = 56;
         setStats(localStats);
         saveToLocalStorage("stats", localStats);
