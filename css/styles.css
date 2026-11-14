@@ -564,6 +564,7 @@ header #btn-settings {
   padding-left: 0;
   padding-right: 0;
   padding-bottom: 0.5rem;
+  min-height: .75rem;
 }
 .overlay .body header h2 {
   position: absolute;
@@ -899,6 +900,9 @@ header #btn-settings {
   justify-content: center;
   margin: 1.25rem 0;
 }
+#stats-buttons:last-child {
+  margin-bottom: 0;
+}
 #stats-buttons button {
   display: flex;
   align-items: center;
@@ -920,7 +924,7 @@ header #btn-settings {
   margin-right: 0.5rem;
 }
 
-#btn-share {
+#btn-share, #btn-play-here {
   color: var(--black);
   background-color: var(--button-success);
 }

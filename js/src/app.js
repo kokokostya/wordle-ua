@@ -95,13 +95,12 @@ function App(props) {
   });
   const [wrongAttempt, setWrongAttempt] = React.useState(false);
   const [UID, setUID] = React.useState(null);
+  const [blocked, setBlocked] = React.useState(false);
 
-  // The issue the board on screen belongs to. The answer and everything else about the
-  // current game is derived from THIS, never from the clock, so the word can't change mid-game.
-  const [gameIssue, setGameIssue] = React.useState(null);
-  const gameIssueRef = React.useRef(null);   // same value, readable from timers and listeners
-  const boardVersionRef = React.useRef(0);   // bumped whenever the board is reset/reloaded
-  const boardIssue = gameIssue !== null ? gameIssue : getIssueNumber(currentEdition.lettersLimit);
+  // The game on screen. Replaced by a new object every time a board is started or loaded.
+  const boardRef = React.useRef({ lettersLimit: null, issue: null });
+  // Only the tab named in "activeTab" ("6_activeTab") in local storage may play that edition
+  const tabIdRef = React.useRef(Date.now().toString(36) + Math.random().toString(36).slice(2));
 
   var timer;
 
@@ -122,12 +121,13 @@ function App(props) {
   }, []);
   
   React.useEffect(() => {
+    // The newest tab takes over this edition's game; the other edition can be played in another tab
+    saveToLocalStorage("activeTab", tabIdRef.current);
     // Load last game if still valid
     saveToLocalStorage("lastPlayedEdition", currentEdition.lettersLimit, true);
     const newDefaultStats = createDefaultStats(currentEdition.attemptsLimit);
     const localStats = tryLoadingFromLocalStorage("stats", newDefaultStats, {setter: setStats, defaultValue: newDefaultStats});
-    // Continue today's saved game, or start a fresh one
-    loadOrResetGame(getIssueNumber(currentEdition.lettersLimit));
+    loadOrResetBoard();
 
     // Update URL
     var url = new window.URL(document.location);
@@ -135,23 +135,23 @@ function App(props) {
     window.history.replaceState({}, "", url);
 
     // Fix individual user's stats
-    const localUID = tryLoadingFromLocalStorage("UID", null, {skipSetting: true, ignoreLettersLimit: true});
-    if (localUID == "lw6indui1tkixs0y0") {
-      if (currentEdition.lettersLimit == 5 && localStats.games < 868) {
-        // let issueNumber = getIssueNumber(5)
-        localStats.games = 867;
-        localStats.won = 865;
-        localStats.streak = 297;
-        localStats.maxStreak = 297;
-        localStats.attempts[1] = 14;
-        localStats.attempts[2] = 30;
-        localStats.attempts[3] = 116;
-        localStats.attempts[4] = 408;
-        localStats.attempts[5] = 241;
-        localStats.attempts[6] = 56;
-        setStats(localStats);
-        saveToLocalStorage("stats", localStats);
-      }
+    // const localUID = tryLoadingFromLocalStorage("UID", null, {skipSetting: true, ignoreLettersLimit: true});
+    // if (localUID == "lw6indui1tkixs0y0") {
+      // if (currentEdition.lettersLimit == 5 && localStats.games < 864) {
+      //   // let issueNumber = getIssueNumber(5)
+      //   localStats.games = 863;
+      //   localStats.won = 860;
+      //   localStats.streak = 293;
+      //   localStats.maxStreak = 293;
+      //   localStats.attempts[1] = 14;
+      //   localStats.attempts[2] = 30;
+      //   localStats.attempts[3] = 116;
+      //   localStats.attempts[4] = 408;
+      //   localStats.attempts[5] = 236;
+      //   localStats.attempts[6] = 56;
+      //   setStats(localStats);
+      //   saveToLocalStorage("stats", localStats);
+      // }
       // if (currentEdition.lettersLimit == 6 && localStats.games < 726) {
       //   // let issueNumber = getIssueNumber(6)
       //   localStats.games = 724;
@@ -167,18 +167,18 @@ function App(props) {
       //   setStats(localStats);
       //   saveToLocalStorage("stats", localStats);
       // }
-    }
+    // }
 
     // Keep track of time and reset once new game is out
     timer = setInterval(() => {
-      syncGame();
+      syncBoard();
       setTimeLeft(getTimeTillMidnight());
     }, 1000);
 
-    // Background tabs have their timers throttled or frozen, so also re-check the moment the page wakes up
+    // Background tabs have their timers slowed or frozen, so also check the moment the page wakes up
     const onWake = () => {
       if (!document.hidden) {
-        syncGame();
+        syncBoard();
         setTimeLeft(getTimeTillMidnight());
       }
     };
@@ -186,21 +186,41 @@ function App(props) {
     window.addEventListener("focus", onWake);
     window.addEventListener("pageshow", onWake);
 
+    // React right away when another tab takes over this edition's game or frees it
+    const activeTabKey = (currentEdition.lettersLimit != 5 ? currentEdition.lettersLimit + "_" : "") + "activeTab";
+    const onStorage = (e) => {
+      if (e.key == activeTabKey || e.key === null) {
+        syncBoard();
+      }
+    };
+    window.addEventListener("storage", onStorage);
+
+    // Closing the active tab, or switching it to the other edition, frees the game for the others
+    const onLeave = () => {
+      if (getFromLocalStorage("activeTab") === tabIdRef.current) {
+        localStorage.removeItem(activeTabKey);
+      }
+    };
+    window.addEventListener("pagehide", onLeave);
+
     return () => {
       clearInterval(timer);
       timer = null;
       document.removeEventListener("visibilitychange", onWake);
       window.removeEventListener("focus", onWake);
       window.removeEventListener("pageshow", onWake);
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pagehide", onLeave);
+      onLeave();
     }
   }, [currentEdition]);
 
   // Save to local storage
   React.useEffect(() => {
-    if (canPersistGame()) saveToLocalStorage("attempts", attempts);
+    if (boardOwnsStorage()) saveToLocalStorage("attempts", attempts);
   }, [attempts]);
   React.useEffect(() => {
-    if (canPersistGame()) saveToLocalStorage("feedback", feedback);
+    if (boardOwnsStorage()) saveToLocalStorage("feedback", feedback);
   }, [feedback]);
   React.useEffect(() => {
     var localStats;
@@ -225,7 +245,7 @@ function App(props) {
     }
   }, [stats]);
   React.useEffect(() => {
-    if (canPersistGame()) saveToLocalStorage("result", result);
+    if (boardOwnsStorage()) saveToLocalStorage("result", result);
     let modalTimer = null;
     if (result != null) {
       modalTimer = setTimeout(() => setModal("stats"), 1000);
@@ -238,7 +258,7 @@ function App(props) {
       setModal(null);
     }
 
-    // A pending "show stats" popup must not outlive the board it belonged to
+    // A pending stats popup must not outlive the board it belongs to
     return () => {
       if (modalTimer) clearTimeout(modalTimer);
     };
@@ -259,6 +279,9 @@ function App(props) {
   // The listener is registered once and always calls the latest handler, so it never acts on stale state
   const keyHandlerRef = React.useRef(null);
   keyHandlerRef.current = (e) => {
+    if (blocked) {
+      return;
+    }
     if ("’йцукенгшщзхїфівапролджєячсмитьбю".includes(e.key)) {
       e.preventDefault();
       enterLetter(e.key.replace("’", "'"));
@@ -279,84 +302,102 @@ function App(props) {
     }
   }, []);
 
-  // Called whenever a board is (re)started or loaded: pins the game to an issue
-  function startGame(issue) {
-    gameIssueRef.current = issue;
-    boardVersionRef.current += 1;
-    setGameIssue(issue);
+  function pinBoard(issue) {
+    boardRef.current = { lettersLimit: currentEdition.lettersLimit, issue: issue };
   }
 
-  function getStoredIssue() {
-    try {
-      const v = getFromLocalStorage("lastPlayedIssueNumber");
-      return (v === null || v === undefined) ? null : Number(v);
-    } catch(e) {
-      return null;
+  // Local storage is shared between tabs: a locked tab or an older board must not write over it
+  function boardOwnsStorage() {
+    return getFromLocalStorage("activeTab") === tabIdRef.current &&
+      getFromLocalStorage("lastPlayedIssueNumber") === boardRef.current.issue;
+  }
+
+  // A clock corrected back over midnight (issue one ahead) keeps its board instead of wiping it
+  function isIssueInPlay(issue) {
+    const live = getLiveIssueNumber(currentEdition.lettersLimit);
+    return issue === live || issue === live + 1;
+  }
+
+  // Locks this tab if another one owns the game, and replaces the board if its issue is over.
+  // Returns false if either happened, so that input gets dropped.
+  function syncBoard() {
+    const owner = getFromLocalStorage("activeTab");
+    if (owner === null && !document.hidden) {
+      takeOverGame();
+      return false;
     }
-  }
-
-  // Local storage is shared between tabs. A board that belongs to an older issue must never
-  // overwrite what a tab that has already moved on has stored.
-  function canPersistGame() {
-    if (gameIssueRef.current === null) return true;
-    const stored = getStoredIssue();
-    return stored === null || stored === gameIssueRef.current;
-  }
-
-  // Makes sure the board on screen belongs to today's issue.
-  // Returns true when play may continue, false when the board was just replaced (swallow the input).
-  function syncGame() {
-    const live = getIssueNumber(currentEdition.lettersLimit);
-    const boardIssueNow = gameIssueRef.current;
-    // Same day (or the device clock stepped backwards): keep the board and its word as they are
-    if (boardIssueNow !== null && live <= boardIssueNow) return true;
-    loadOrResetGame(live);
+    if (owner !== tabIdRef.current) {
+      setBlocked(true);
+      return false;
+    }
+    if (isIssueInPlay(boardRef.current.issue)) {
+      return true;
+    }
+    reloadBoard();
     return false;
   }
 
-  function loadOrResetGame(live) {
-    if (getStoredIssue() === live) {
-      // Today's game already exists (another tab started it, or we're reloading): continue it
-      loadSavedGame(live);
+  function takeOverGame() {
+    saveToLocalStorage("activeTab", tabIdRef.current);
+    setBlocked(false);
+    reloadBoard();
+  }
+
+  function reloadBoard() {
+    loadOrResetBoard();
+    // Another tab may have changed the stats while this one wasn't playing
+    const localStats = tryLoadingFromLocalStorage("stats", null, {skipSetting: true});
+    if (localStats) {
+      setStats(current => JSON.stringify(current) == JSON.stringify(localStats) ? current : localStats);
+    }
+  }
+
+  function loadOrResetBoard() {
+    const lastPlayedIssueNumber = getFromLocalStorage("lastPlayedIssueNumber");
+
+    if (isIssueInPlay(lastPlayedIssueNumber)) {
+      pinBoard(lastPlayedIssueNumber);
+      var localAttempts = tryLoadingFromLocalStorage("attempts", null, {setter: setAttempts, defaultValue: [], skipUpdating: true});
+      var localFeedback = tryLoadingFromLocalStorage("feedback", null, {setter: setFeedback, defaultValue: [], skipUpdating: true});
+      tryLoadingFromLocalStorage("result", null, {setter: setResult, defaultValue: null});
+      setCursor({
+        attempt: (localFeedback) ? localFeedback.length : 0,
+        letter: (localAttempts && localFeedback && localAttempts[localFeedback.length]) ? localAttempts[localFeedback.length].length : 0
+      });
     } else {
-      resetGame(live);
+      resetGame();
     }
   }
 
-  function loadSavedGame(issue) {
-    startGame(issue);
-    var localAttempts = tryLoadingFromLocalStorage("attempts", null, {setter: setAttempts, defaultValue: [], skipUpdating: true});
-    var localFeedback = tryLoadingFromLocalStorage("feedback", null, {setter: setFeedback, defaultValue: [], skipUpdating: true});
-    tryLoadingFromLocalStorage("result", null, {setter: setResult, defaultValue: null});
-    setCursor({
-      attempt: (localFeedback) ? localFeedback.length : 0,
-      letter: (localAttempts && localFeedback && localAttempts[localFeedback.length]) ? localAttempts[localFeedback.length].length : 0
-    });
-  }
+  function resetGame() {
+    const lastPlayed = getFromLocalStorage("lastPlayedIssueNumber");
+    const currentlyPlayed = getLiveIssueNumber(currentEdition.lettersLimit);
 
-  function resetGame(currentlyPlayed = getIssueNumber(currentEdition.lettersLimit)) {
     // Reset streak if games skipped
-    const lastPlayed = getStoredIssue();
+    var newStats = null;
     if (lastPlayed && (currentlyPlayed - lastPlayed > 1 || currentlyPlayed - lastPlayed == 1 && getFromLocalStorage("result") == null)) {
-      var newStats = {...tryLoadingFromLocalStorage("stats", stats, {skipSetting: true})};
+      newStats = {...tryLoadingFromLocalStorage("stats", stats, {skipSetting: true})};
       newStats.streak = 0;
-      setStats(newStats);
+      saveToLocalStorage("stats", newStats);
     }
 
-    // Write the clean board straight to storage (not via effects), issue number last
+    // Issue number goes last: if the page dies halfway, yesterday's board can't pass for today's
     saveToLocalStorage("attempts", []);
     saveToLocalStorage("feedback", []);
     saveToLocalStorage("result", null);
     saveToLocalStorage("lastPlayedIssueNumber", currentlyPlayed);
+    pinBoard(currentlyPlayed);
 
-    startGame(currentlyPlayed);
     setAttempts([]);
     setFeedback([]);
     setResult(null);
     setCursor({
-      attempt: 0, 
+      attempt: 0,
       letter: 0
     })
+    if (newStats) {
+      setStats(newStats);
+    }
   }
 
   function getFromLocalStorage(propName, ignoreLettersLimit=false) {
@@ -401,7 +442,7 @@ function App(props) {
 
   function updateAverageStats(stats, msg=null) {
     console.log("Запит статистики для гри на " + currentEdition.lettersLimit + " букв...")
-    const issue = gameIssueRef.current !== null ? gameIssueRef.current : getIssueNumber(currentEdition.lettersLimit);
+    const issue = getBoardIssue();
     var url;
     if (window.location.href.includes("wordle-ua.net")) {
       url = "https://ukr.warspotting.net/wordle/"
@@ -439,28 +480,18 @@ function App(props) {
     });
   }
 
-  // Kyiv wall-clock fields of a moment in time, as numbers (no locale-string parsing)
-  function getKyivParts(date) {
-    const parts = {};
-    new Intl.DateTimeFormat('en-GB', {
-      timeZone: 'Europe/Kiev',
-      hour12: false,
-      year: 'numeric', month: '2-digit', day: '2-digit',
-      hour: '2-digit', minute: '2-digit', second: '2-digit'
-    }).formatToParts(date).forEach(p => { parts[p.type] = parseInt(p.value, 10); });
-    parts.hour = parts.hour % 24; // some engines report midnight as 24
-    return parts;
-  }
-
   function getKyivDateTimeIgnoringGMT(date) {
-    const p = getKyivParts(date);
-    return new Date(Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second));
-  }
-
-  // Whole days since the epoch, counted on the Kyiv calendar
-  function getKyivDayNumber(date) {
-    const p = getKyivParts(date);
-    return Math.round(Date.UTC(p.year, p.month - 1, p.day) / 86400000);
+    const kyivTime = date.toLocaleString('uk-UA', { timeZone: 'Europe/Kiev' });
+    const kyivTimeComponents = kyivTime.split(/[\s,.:]+/);
+    const kyivDate = new Date(Date.UTC(
+        kyivTimeComponents[2], 
+        kyivTimeComponents[1] - 1, 
+        kyivTimeComponents[0], 
+        kyivTimeComponents[3], 
+        kyivTimeComponents[4], 
+        kyivTimeComponents[5]   
+    ));
+    return kyivDate;
   }
 
   function getTimeTillMidnight() {
@@ -486,13 +517,24 @@ function App(props) {
     return obj;
   }
 
-  function getIssueNumber(editionLettersLimit) {
+  // Today's issue according to the clock
+  function getLiveIssueNumber(editionLettersLimit) {
+    // const now = new Date();
+    // return now.getMinutes() + 1;
     const firstDay = editions.find(e => e.lettersLimit == editionLettersLimit).firstDay;
-    return getKyivDayNumber(new Date()) - getKyivDayNumber(firstDay) + 1;
+    return Math.ceil((getKyivDateTimeIgnoringGMT(new Date())-getKyivDateTimeIgnoringGMT(firstDay))/(1000*60*60*24));
   }
-  
+
+  // The issue being played. The answer comes from here, so it stays the same for the whole board.
+  function getBoardIssue() {
+    const board = boardRef.current;
+    return board.lettersLimit == currentEdition.lettersLimit ? board.issue : getLiveIssueNumber(currentEdition.lettersLimit);
+  }
+
   function enterLetter(letter) {
-    if (!syncGame()) return;
+    if (!syncBoard()) {
+      return;
+    }
 
     if ((result == null) && (cursor.attempt < currentEdition.attemptsLimit) && (cursor.letter < currentEdition.lettersLimit)) {
       const newAttempts = [...attempts];
@@ -505,7 +547,9 @@ function App(props) {
   }
 
   function eraseLetter() {
-    if (!syncGame()) return;
+    if (!syncBoard()) {
+      return;
+    }
 
     if ((result == null) && (cursor.letter > 0)) {
       const newAttempts = [...attempts];
@@ -518,15 +562,17 @@ function App(props) {
 
   function provideLetterFeedback(newFeedback) {
     var revealedLetter = 0;
-    const boardVersion = boardVersionRef.current;
+    const board = boardRef.current;
     revealLetter();
     var letterTimer = setInterval(revealLetter, 150);
     function revealLetter() {
-      if (boardVersionRef.current !== boardVersion) {
+      // Board was replaced mid-animation: stop, and save the full row if its game is still the stored one
+      if (boardRef.current !== board) {
         clearInterval(letterTimer);
-        return;
-      }
-      if (revealedLetter < currentEdition.lettersLimit) {
+        if (getFromLocalStorage("lastPlayedIssueNumber") === board.issue) {
+          saveToLocalStorage("feedback", newFeedback);
+        }
+      } else if (revealedLetter < currentEdition.lettersLimit) {
         let letterFeedback = [...newFeedback]
         letterFeedback[letterFeedback.length-1] = newFeedback[newFeedback.length-1].slice(0, revealedLetter+1);
         setFeedback(letterFeedback);
@@ -538,11 +584,12 @@ function App(props) {
   }
 
   function checkWord() {
-    if (!syncGame()) return;
+    if (!syncBoard()) {
+      return;
+    }
 
-    // From here on everything uses the board's own issue, never the clock
     var attempt = attempts[cursor.attempt];
-    var answer = currentEdition.answer(gameIssueRef.current);
+    var answer = currentEdition.answer(getBoardIssue());
 
     if ((result == null) && (cursor.attempt < currentEdition.attemptsLimit) && (cursor.letter == currentEdition.lettersLimit)) {
       // Actual word || Easter egg
@@ -590,7 +637,7 @@ function App(props) {
         // Game over
         if (newResult != null) {
           // Don't go over number of issues
-          if (stats.games < gameIssueRef.current) {
+          if (stats.games < getBoardIssue()) {
             let newStats = {...stats};
             newStats.games += 1;    
             if (newResult == "won") {
@@ -623,7 +670,7 @@ function App(props) {
     if (currentEdition.lettersLimit > 5) {
       str += `${currentEdition.lettersLimit} `;
     }
-    str += "№" + boardIssue + " " + feedback.length + "/" + currentEdition.attemptsLimit + ":";
+    str += "№" + getBoardIssue() + " " + feedback.length + "/" + currentEdition.attemptsLimit + ":";
     feedback.map(attempt => {
       str += "\n";
       attempt.map(res => str += (res=="hit") ? "🟩" : (res=="found") ? "🟨" : "⬜")
@@ -792,10 +839,11 @@ function App(props) {
         </div>
       </footer>
       
-      { modal && <Modal
-        type={modal}
+      { (modal || blocked) && <Modal
+        type={blocked ? "another-tab" : modal}
         handleClose={setModal}
-        n={boardIssue}
+        takeOverGame={takeOverGame}
+        n={getBoardIssue()}
         stats={stats}
         averageStats={averageStats}
         averageStatsLoaded={averageStatsLoaded}
@@ -806,7 +854,7 @@ function App(props) {
         result={result}
         shareResult={shareResult}
         switchModal={switchModal}
-        answer={currentEdition.answer(boardIssue)}
+        answer={currentEdition.answer(getBoardIssue())}
         uid={UID}
         currentEdition={currentEdition}
         setCurrentEdition={setCurrentEdition}
@@ -1244,6 +1292,14 @@ function Modal(props) {
       </div>
 
     </React.Fragment>
+  } else if (props.type == "another-tab") {
+    title = "Гра в іншій вкладці";
+    content = <React.Fragment>
+      <p>Одночасно можна грати лише в одній вкладці. Ви можете продовжити гру тут, прогрес збережено.</p>
+      <div id="stats-buttons">
+        <button id="btn-play-here" autoFocus onClick={props.takeOverGame}>Грати тут</button>
+      </div>
+    </React.Fragment>
   }
 
   return ReactDOM.createPortal(
@@ -1251,12 +1307,12 @@ function Modal(props) {
       <div className={"body" + ((props.type == "avg-stats") ? " avg-stats rainbow" : "")}>
         <header>
           <h2>{ title }</h2>
-          <button id="btn-close" className="icon ml-auto" aria-label="Повернутись до гри" onClick={(e) => props.handleClose(null)}>
+          { (props.type != "another-tab") && <button id="btn-close" className="icon ml-auto" aria-label="Повернутись до гри" onClick={(e) => props.handleClose(null)}>
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" className="bi bi-x-lg" viewBox="0 0 16 16">
               <path fillRule="evenodd" d="M13.854 2.146a.5.5 0 0 1 0 .708l-11 11a.5.5 0 0 1-.708-.708l11-11a.5.5 0 0 1 .708 0Z"/>
               <path fillRule="evenodd" d="M2.146 2.146a.5.5 0 0 0 0 .708l11 11a.5.5 0 0 0 .708-.708l-11-11a.5.5 0 0 0-.708 0Z"/>
             </svg>
-          </button>
+          </button> }
         </header>
         <main>{ content }</main>
         { (props.type == "avg-stats") && <footer>

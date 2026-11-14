@@ -162,16 +162,18 @@ function App(props) {
     _React$useState28 = _slicedToArray(_React$useState27, 2),
     UID = _React$useState28[0],
     setUID = _React$useState28[1];
-
-  // The issue the board on screen belongs to. The answer and everything else about the
-  // current game is derived from THIS, never from the clock, so the word can't change mid-game.
-  var _React$useState29 = React.useState(null),
+  var _React$useState29 = React.useState(false),
     _React$useState30 = _slicedToArray(_React$useState29, 2),
-    gameIssue = _React$useState30[0],
-    setGameIssue = _React$useState30[1];
-  var gameIssueRef = React.useRef(null); // same value, readable from timers and listeners
-  var boardVersionRef = React.useRef(0); // bumped whenever the board is reset/reloaded
-  var boardIssue = gameIssue !== null ? gameIssue : getIssueNumber(currentEdition.lettersLimit);
+    blocked = _React$useState30[0],
+    setBlocked = _React$useState30[1];
+
+  // The game on screen. Replaced by a new object every time a board is started or loaded.
+  var boardRef = React.useRef({
+    lettersLimit: null,
+    issue: null
+  });
+  // Only the tab named in "activeTab" ("6_activeTab") in local storage may play that edition
+  var tabIdRef = React.useRef(Date.now().toString(36) + Math.random().toString(36).slice(2));
   var timer;
 
   // Store previous settings to compare in the useEffect
@@ -197,6 +199,8 @@ function App(props) {
     });
   }, []);
   React.useEffect(function () {
+    // The newest tab takes over this edition's game; the other edition can be played in another tab
+    saveToLocalStorage("activeTab", tabIdRef.current);
     // Load last game if still valid
     saveToLocalStorage("lastPlayedEdition", currentEdition.lettersLimit, true);
     var newDefaultStats = createDefaultStats(currentEdition.attemptsLimit);
@@ -204,8 +208,7 @@ function App(props) {
       setter: setStats,
       defaultValue: newDefaultStats
     });
-    // Continue today's saved game, or start a fresh one
-    loadOrResetGame(getIssueNumber(currentEdition.lettersLimit));
+    loadOrResetBoard();
 
     // Update URL
     var url = new window.URL(document.location);
@@ -213,74 +216,91 @@ function App(props) {
     window.history.replaceState({}, "", url);
 
     // Fix individual user's stats
-    var localUID = tryLoadingFromLocalStorage("UID", null, {
-      skipSetting: true,
-      ignoreLettersLimit: true
-    });
-    if (localUID == "lw6indui1tkixs0y0") {
-      if (currentEdition.lettersLimit == 5 && localStats.games < 868) {
-        // let issueNumber = getIssueNumber(5)
-        localStats.games = 867;
-        localStats.won = 865;
-        localStats.streak = 297;
-        localStats.maxStreak = 297;
-        localStats.attempts[1] = 14;
-        localStats.attempts[2] = 30;
-        localStats.attempts[3] = 116;
-        localStats.attempts[4] = 408;
-        localStats.attempts[5] = 241;
-        localStats.attempts[6] = 56;
-        setStats(localStats);
-        saveToLocalStorage("stats", localStats);
-      }
-      // if (currentEdition.lettersLimit == 6 && localStats.games < 726) {
-      //   // let issueNumber = getIssueNumber(6)
-      //   localStats.games = 724;
-      //   localStats.won = 724;
-      //   localStats.streak = 724;
-      //   localStats.maxStreak = 724;
-      //   localStats.attempts[1] = 4;
-      //   localStats.attempts[2] = 4;
-      //   localStats.attempts[3] = 63;
-      //   localStats.attempts[4] = 295;
-      //   localStats.attempts[5] = 288;
-      //   localStats.attempts[6] = 70;
-      //   setStats(localStats);
-      //   saveToLocalStorage("stats", localStats);
-      // }
-    }
+    // const localUID = tryLoadingFromLocalStorage("UID", null, {skipSetting: true, ignoreLettersLimit: true});
+    // if (localUID == "lw6indui1tkixs0y0") {
+    // if (currentEdition.lettersLimit == 5 && localStats.games < 864) {
+    //   // let issueNumber = getIssueNumber(5)
+    //   localStats.games = 863;
+    //   localStats.won = 860;
+    //   localStats.streak = 293;
+    //   localStats.maxStreak = 293;
+    //   localStats.attempts[1] = 14;
+    //   localStats.attempts[2] = 30;
+    //   localStats.attempts[3] = 116;
+    //   localStats.attempts[4] = 408;
+    //   localStats.attempts[5] = 236;
+    //   localStats.attempts[6] = 56;
+    //   setStats(localStats);
+    //   saveToLocalStorage("stats", localStats);
+    // }
+    // if (currentEdition.lettersLimit == 6 && localStats.games < 726) {
+    //   // let issueNumber = getIssueNumber(6)
+    //   localStats.games = 724;
+    //   localStats.won = 724;
+    //   localStats.streak = 724;
+    //   localStats.maxStreak = 724;
+    //   localStats.attempts[1] = 4;
+    //   localStats.attempts[2] = 4;
+    //   localStats.attempts[3] = 63;
+    //   localStats.attempts[4] = 295;
+    //   localStats.attempts[5] = 288;
+    //   localStats.attempts[6] = 70;
+    //   setStats(localStats);
+    //   saveToLocalStorage("stats", localStats);
+    // }
+    // }
 
     // Keep track of time and reset once new game is out
     timer = setInterval(function () {
-      syncGame();
+      syncBoard();
       setTimeLeft(getTimeTillMidnight());
     }, 1000);
 
-    // Background tabs have their timers throttled or frozen, so also re-check the moment the page wakes up
+    // Background tabs have their timers slowed or frozen, so also check the moment the page wakes up
     var onWake = function onWake() {
       if (!document.hidden) {
-        syncGame();
+        syncBoard();
         setTimeLeft(getTimeTillMidnight());
       }
     };
     document.addEventListener("visibilitychange", onWake);
     window.addEventListener("focus", onWake);
     window.addEventListener("pageshow", onWake);
+
+    // React right away when another tab takes over this edition's game or frees it
+    var activeTabKey = (currentEdition.lettersLimit != 5 ? currentEdition.lettersLimit + "_" : "") + "activeTab";
+    var onStorage = function onStorage(e) {
+      if (e.key == activeTabKey || e.key === null) {
+        syncBoard();
+      }
+    };
+    window.addEventListener("storage", onStorage);
+
+    // Closing the active tab, or switching it to the other edition, frees the game for the others
+    var onLeave = function onLeave() {
+      if (getFromLocalStorage("activeTab") === tabIdRef.current) {
+        localStorage.removeItem(activeTabKey);
+      }
+    };
+    window.addEventListener("pagehide", onLeave);
     return function () {
       clearInterval(timer);
       timer = null;
       document.removeEventListener("visibilitychange", onWake);
       window.removeEventListener("focus", onWake);
       window.removeEventListener("pageshow", onWake);
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("pagehide", onLeave);
+      onLeave();
     };
   }, [currentEdition]);
 
   // Save to local storage
   React.useEffect(function () {
-    if (canPersistGame()) saveToLocalStorage("attempts", attempts);
+    if (boardOwnsStorage()) saveToLocalStorage("attempts", attempts);
   }, [attempts]);
   React.useEffect(function () {
-    if (canPersistGame()) saveToLocalStorage("feedback", feedback);
+    if (boardOwnsStorage()) saveToLocalStorage("feedback", feedback);
   }, [feedback]);
   React.useEffect(function () {
     var localStats;
@@ -304,7 +324,7 @@ function App(props) {
     }
   }, [stats]);
   React.useEffect(function () {
-    if (canPersistGame()) saveToLocalStorage("result", result);
+    if (boardOwnsStorage()) saveToLocalStorage("result", result);
     var modalTimer = null;
     if (result != null) {
       modalTimer = setTimeout(function () {
@@ -319,7 +339,7 @@ function App(props) {
       setModal(null);
     }
 
-    // A pending "show stats" popup must not outlive the board it belonged to
+    // A pending stats popup must not outlive the board it belongs to
     return function () {
       if (modalTimer) clearTimeout(modalTimer);
     };
@@ -340,6 +360,9 @@ function App(props) {
   // The listener is registered once and always calls the latest handler, so it never acts on stale state
   var keyHandlerRef = React.useRef(null);
   keyHandlerRef.current = function (e) {
+    if (blocked) {
+      return;
+    }
     if ("’йцукенгшщзхїфівапролджєячсмитьбю".includes(e.key)) {
       e.preventDefault();
       enterLetter(e.key.replace("’", "'"));
@@ -360,87 +383,105 @@ function App(props) {
       window.removeEventListener("keydown", keyListener);
     };
   }, []);
-
-  // Called whenever a board is (re)started or loaded: pins the game to an issue
-  function startGame(issue) {
-    gameIssueRef.current = issue;
-    boardVersionRef.current += 1;
-    setGameIssue(issue);
+  function pinBoard(issue) {
+    boardRef.current = {
+      lettersLimit: currentEdition.lettersLimit,
+      issue: issue
+    };
   }
-  function getStoredIssue() {
-    try {
-      var v = getFromLocalStorage("lastPlayedIssueNumber");
-      return v === null || v === undefined ? null : Number(v);
-    } catch (e) {
-      return null;
+
+  // Local storage is shared between tabs: a locked tab or an older board must not write over it
+  function boardOwnsStorage() {
+    return getFromLocalStorage("activeTab") === tabIdRef.current && getFromLocalStorage("lastPlayedIssueNumber") === boardRef.current.issue;
+  }
+
+  // A clock corrected back over midnight (issue one ahead) keeps its board instead of wiping it
+  function isIssueInPlay(issue) {
+    var live = getLiveIssueNumber(currentEdition.lettersLimit);
+    return issue === live || issue === live + 1;
+  }
+
+  // Locks this tab if another one owns the game, and replaces the board if its issue is over.
+  // Returns false if either happened, so that input gets dropped.
+  function syncBoard() {
+    var owner = getFromLocalStorage("activeTab");
+    if (owner === null && !document.hidden) {
+      takeOverGame();
+      return false;
     }
-  }
-
-  // Local storage is shared between tabs. A board that belongs to an older issue must never
-  // overwrite what a tab that has already moved on has stored.
-  function canPersistGame() {
-    if (gameIssueRef.current === null) return true;
-    var stored = getStoredIssue();
-    return stored === null || stored === gameIssueRef.current;
-  }
-
-  // Makes sure the board on screen belongs to today's issue.
-  // Returns true when play may continue, false when the board was just replaced (swallow the input).
-  function syncGame() {
-    var live = getIssueNumber(currentEdition.lettersLimit);
-    var boardIssueNow = gameIssueRef.current;
-    // Same day (or the device clock stepped backwards): keep the board and its word as they are
-    if (boardIssueNow !== null && live <= boardIssueNow) return true;
-    loadOrResetGame(live);
+    if (owner !== tabIdRef.current) {
+      setBlocked(true);
+      return false;
+    }
+    if (isIssueInPlay(boardRef.current.issue)) {
+      return true;
+    }
+    reloadBoard();
     return false;
   }
-  function loadOrResetGame(live) {
-    if (getStoredIssue() === live) {
-      // Today's game already exists (another tab started it, or we're reloading): continue it
-      loadSavedGame(live);
-    } else {
-      resetGame(live);
+  function takeOverGame() {
+    saveToLocalStorage("activeTab", tabIdRef.current);
+    setBlocked(false);
+    reloadBoard();
+  }
+  function reloadBoard() {
+    loadOrResetBoard();
+    // Another tab may have changed the stats while this one wasn't playing
+    var localStats = tryLoadingFromLocalStorage("stats", null, {
+      skipSetting: true
+    });
+    if (localStats) {
+      setStats(function (current) {
+        return JSON.stringify(current) == JSON.stringify(localStats) ? current : localStats;
+      });
     }
   }
-  function loadSavedGame(issue) {
-    startGame(issue);
-    var localAttempts = tryLoadingFromLocalStorage("attempts", null, {
-      setter: setAttempts,
-      defaultValue: [],
-      skipUpdating: true
-    });
-    var localFeedback = tryLoadingFromLocalStorage("feedback", null, {
-      setter: setFeedback,
-      defaultValue: [],
-      skipUpdating: true
-    });
-    tryLoadingFromLocalStorage("result", null, {
-      setter: setResult,
-      defaultValue: null
-    });
-    setCursor({
-      attempt: localFeedback ? localFeedback.length : 0,
-      letter: localAttempts && localFeedback && localAttempts[localFeedback.length] ? localAttempts[localFeedback.length].length : 0
-    });
+  function loadOrResetBoard() {
+    var lastPlayedIssueNumber = getFromLocalStorage("lastPlayedIssueNumber");
+    if (isIssueInPlay(lastPlayedIssueNumber)) {
+      pinBoard(lastPlayedIssueNumber);
+      var localAttempts = tryLoadingFromLocalStorage("attempts", null, {
+        setter: setAttempts,
+        defaultValue: [],
+        skipUpdating: true
+      });
+      var localFeedback = tryLoadingFromLocalStorage("feedback", null, {
+        setter: setFeedback,
+        defaultValue: [],
+        skipUpdating: true
+      });
+      tryLoadingFromLocalStorage("result", null, {
+        setter: setResult,
+        defaultValue: null
+      });
+      setCursor({
+        attempt: localFeedback ? localFeedback.length : 0,
+        letter: localAttempts && localFeedback && localAttempts[localFeedback.length] ? localAttempts[localFeedback.length].length : 0
+      });
+    } else {
+      resetGame();
+    }
   }
   function resetGame() {
-    var currentlyPlayed = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : getIssueNumber(currentEdition.lettersLimit);
+    var lastPlayed = getFromLocalStorage("lastPlayedIssueNumber");
+    var currentlyPlayed = getLiveIssueNumber(currentEdition.lettersLimit);
+
     // Reset streak if games skipped
-    var lastPlayed = getStoredIssue();
+    var newStats = null;
     if (lastPlayed && (currentlyPlayed - lastPlayed > 1 || currentlyPlayed - lastPlayed == 1 && getFromLocalStorage("result") == null)) {
-      var newStats = _objectSpread({}, tryLoadingFromLocalStorage("stats", stats, {
+      newStats = _objectSpread({}, tryLoadingFromLocalStorage("stats", stats, {
         skipSetting: true
       }));
       newStats.streak = 0;
-      setStats(newStats);
+      saveToLocalStorage("stats", newStats);
     }
 
-    // Write the clean board straight to storage (not via effects), issue number last
+    // Issue number goes last: if the page dies halfway, yesterday's board can't pass for today's
     saveToLocalStorage("attempts", []);
     saveToLocalStorage("feedback", []);
     saveToLocalStorage("result", null);
     saveToLocalStorage("lastPlayedIssueNumber", currentlyPlayed);
-    startGame(currentlyPlayed);
+    pinBoard(currentlyPlayed);
     setAttempts([]);
     setFeedback([]);
     setResult(null);
@@ -448,6 +489,9 @@ function App(props) {
       attempt: 0,
       letter: 0
     });
+    if (newStats) {
+      setStats(newStats);
+    }
   }
   function getFromLocalStorage(propName) {
     var ignoreLettersLimit = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : false;
@@ -491,7 +535,7 @@ function App(props) {
   function updateAverageStats(stats) {
     var msg = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : null;
     console.log("Запит статистики для гри на " + currentEdition.lettersLimit + " букв...");
-    var issue = gameIssueRef.current !== null ? gameIssueRef.current : getIssueNumber(currentEdition.lettersLimit);
+    var issue = getBoardIssue();
     var url;
     if (window.location.href.includes("wordle-ua.net")) {
       url = "https://ukr.warspotting.net/wordle/";
@@ -525,34 +569,13 @@ function App(props) {
       setAverageStatsLoaded(false);
     });
   }
-
-  // Kyiv wall-clock fields of a moment in time, as numbers (no locale-string parsing)
-  function getKyivParts(date) {
-    var parts = {};
-    new Intl.DateTimeFormat('en-GB', {
-      timeZone: 'Europe/Kiev',
-      hour12: false,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    }).formatToParts(date).forEach(function (p) {
-      parts[p.type] = parseInt(p.value, 10);
-    });
-    parts.hour = parts.hour % 24; // some engines report midnight as 24
-    return parts;
-  }
   function getKyivDateTimeIgnoringGMT(date) {
-    var p = getKyivParts(date);
-    return new Date(Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second));
-  }
-
-  // Whole days since the epoch, counted on the Kyiv calendar
-  function getKyivDayNumber(date) {
-    var p = getKyivParts(date);
-    return Math.round(Date.UTC(p.year, p.month - 1, p.day) / 86400000);
+    var kyivTime = date.toLocaleString('uk-UA', {
+      timeZone: 'Europe/Kiev'
+    });
+    var kyivTimeComponents = kyivTime.split(/[\s,.:]+/);
+    var kyivDate = new Date(Date.UTC(kyivTimeComponents[2], kyivTimeComponents[1] - 1, kyivTimeComponents[0], kyivTimeComponents[3], kyivTimeComponents[4], kyivTimeComponents[5]));
+    return kyivDate;
   }
   function getTimeTillMidnight() {
     var kyivDate = getKyivDateTimeIgnoringGMT(new Date());
@@ -572,14 +595,26 @@ function App(props) {
     };
     return obj;
   }
-  function getIssueNumber(editionLettersLimit) {
+
+  // Today's issue according to the clock
+  function getLiveIssueNumber(editionLettersLimit) {
+    // const now = new Date();
+    // return now.getMinutes() + 1;
     var firstDay = editions.find(function (e) {
       return e.lettersLimit == editionLettersLimit;
     }).firstDay;
-    return getKyivDayNumber(new Date()) - getKyivDayNumber(firstDay) + 1;
+    return Math.ceil((getKyivDateTimeIgnoringGMT(new Date()) - getKyivDateTimeIgnoringGMT(firstDay)) / (1000 * 60 * 60 * 24));
+  }
+
+  // The issue being played. The answer comes from here, so it stays the same for the whole board.
+  function getBoardIssue() {
+    var board = boardRef.current;
+    return board.lettersLimit == currentEdition.lettersLimit ? board.issue : getLiveIssueNumber(currentEdition.lettersLimit);
   }
   function enterLetter(letter) {
-    if (!syncGame()) return;
+    if (!syncBoard()) {
+      return;
+    }
     if (result == null && cursor.attempt < currentEdition.attemptsLimit && cursor.letter < currentEdition.lettersLimit) {
       var newAttempts = _toConsumableArray(attempts);
       var newString = newAttempts[cursor.attempt] || "";
@@ -593,7 +628,9 @@ function App(props) {
     }
   }
   function eraseLetter() {
-    if (!syncGame()) return;
+    if (!syncBoard()) {
+      return;
+    }
     if (result == null && cursor.letter > 0) {
       var newAttempts = _toConsumableArray(attempts);
       newAttempts[cursor.attempt] = attempts[cursor.attempt].substring(0, cursor.letter - 1);
@@ -607,15 +644,17 @@ function App(props) {
   }
   function provideLetterFeedback(newFeedback) {
     var revealedLetter = 0;
-    var boardVersion = boardVersionRef.current;
+    var board = boardRef.current;
     revealLetter();
     var letterTimer = setInterval(revealLetter, 150);
     function revealLetter() {
-      if (boardVersionRef.current !== boardVersion) {
+      // Board was replaced mid-animation: stop, and save the full row if its game is still the stored one
+      if (boardRef.current !== board) {
         clearInterval(letterTimer);
-        return;
-      }
-      if (revealedLetter < currentEdition.lettersLimit) {
+        if (getFromLocalStorage("lastPlayedIssueNumber") === board.issue) {
+          saveToLocalStorage("feedback", newFeedback);
+        }
+      } else if (revealedLetter < currentEdition.lettersLimit) {
         var letterFeedback = _toConsumableArray(newFeedback);
         letterFeedback[letterFeedback.length - 1] = newFeedback[newFeedback.length - 1].slice(0, revealedLetter + 1);
         setFeedback(letterFeedback);
@@ -626,11 +665,11 @@ function App(props) {
     }
   }
   function checkWord() {
-    if (!syncGame()) return;
-
-    // From here on everything uses the board's own issue, never the clock
+    if (!syncBoard()) {
+      return;
+    }
     var attempt = attempts[cursor.attempt];
-    var answer = currentEdition.answer(gameIssueRef.current);
+    var answer = currentEdition.answer(getBoardIssue());
     if (result == null && cursor.attempt < currentEdition.attemptsLimit && cursor.letter == currentEdition.lettersLimit) {
       // Actual word || Easter egg
       if (currentEdition.words(attempt) || currentEdition.lettersLimit == 5 && (cursor.attempt == 0 && attempt == "русні" || cursor.attempt == 1 && attempts[0] == "русні" && attempts[1] == "пизда")) {
@@ -676,7 +715,7 @@ function App(props) {
         // Game over
         if (newResult != null) {
           // Don't go over number of issues
-          if (stats.games < gameIssueRef.current) {
+          if (stats.games < getBoardIssue()) {
             var newStats = _objectSpread({}, stats);
             newStats.games += 1;
             if (newResult == "won") {
@@ -711,7 +750,7 @@ function App(props) {
     if (currentEdition.lettersLimit > 5) {
       str += "".concat(currentEdition.lettersLimit, " ");
     }
-    str += "№" + boardIssue + " " + feedback.length + "/" + currentEdition.attemptsLimit + ":";
+    str += "№" + getBoardIssue() + " " + feedback.length + "/" + currentEdition.attemptsLimit + ":";
     feedback.map(function (attempt) {
       str += "\n";
       attempt.map(function (res) {
@@ -913,10 +952,11 @@ function App(props) {
     viewBox: "0 0 16 16"
   }, /*#__PURE__*/React.createElement("path", {
     d: "M12.736 3.97a.733.733 0 0 1 1.047 0c.286.289.29.756.01 1.05L7.88 12.01a.733.733 0 0 1-1.065.02L3.217 8.384a.757.757 0 0 1 0-1.06.733.733 0 0 1 1.047 0l3.052 3.093 5.4-6.425a.247.247 0 0 1 .02-.022Z"
-  })))))), modal && /*#__PURE__*/React.createElement(Modal, {
-    type: modal,
+  })))))), (modal || blocked) && /*#__PURE__*/React.createElement(Modal, {
+    type: blocked ? "another-tab" : modal,
     handleClose: setModal,
-    n: boardIssue,
+    takeOverGame: takeOverGame,
+    n: getBoardIssue(),
     stats: stats,
     averageStats: averageStats,
     averageStatsLoaded: averageStatsLoaded,
@@ -927,7 +967,7 @@ function App(props) {
     result: result,
     shareResult: shareResult,
     switchModal: switchModal,
-    answer: currentEdition.answer(boardIssue),
+    answer: currentEdition.answer(getBoardIssue()),
     uid: UID,
     currentEdition: currentEdition,
     setCurrentEdition: setCurrentEdition,
@@ -1373,12 +1413,21 @@ function Modal(props) {
     })), /*#__PURE__*/React.createElement("p", {
       className: "small fade"
     }, "\u0412\u0438\u043C\u043A\u043D\u0443\u0432\u0448\u0438 \u0446\u044E \u043E\u043F\u0446\u0456\u044E, \u0432\u0438 \u043D\u0435 \u0437\u043C\u043E\u0436\u0435\u0442\u0435 \u0431\u0430\u0447\u0438\u0442\u0438, \u044F\u043A \u0433\u0440\u0430\u043B\u0438 \u043F\u043E\u0440\u0456\u0432\u043D\u044F\u043D\u043E \u0437 \u0456\u043D\u0448\u0438\u043C\u0438. \u041D\u0430\u0434\u0441\u0438\u043B\u0430\u044E\u0442\u044C\u0441\u044F \u043B\u0438\u0448\u0435 \u0432\u0430\u0448\u0456 \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442\u0438 \u0442\u0430 \u0443\u043D\u0456\u043A\u0430\u043B\u044C\u043D\u0438\u0439 ID: ", /*#__PURE__*/React.createElement("i", null, props.uid))));
+  } else if (props.type == "another-tab") {
+    title = "Гра в іншій вкладці";
+    content = /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("p", null, "\u041E\u0434\u043D\u043E\u0447\u0430\u0441\u043D\u043E \u043C\u043E\u0436\u043D\u0430 \u0433\u0440\u0430\u0442\u0438 \u043B\u0438\u0448\u0435 \u0432 \u043E\u0434\u043D\u0456\u0439 \u0432\u043A\u043B\u0430\u0434\u0446\u0456. \u0412\u0438 \u043C\u043E\u0436\u0435\u0442\u0435 \u043F\u0440\u043E\u0434\u043E\u0432\u0436\u0438\u0442\u0438 \u0433\u0440\u0443 \u0442\u0443\u0442, \u043F\u0440\u043E\u0433\u0440\u0435\u0441 \u0437\u0431\u0435\u0440\u0435\u0436\u0435\u043D\u043E."), /*#__PURE__*/React.createElement("div", {
+      id: "stats-buttons"
+    }, /*#__PURE__*/React.createElement("button", {
+      id: "btn-play-here",
+      autoFocus: true,
+      onClick: props.takeOverGame
+    }, "\u0413\u0440\u0430\u0442\u0438 \u0442\u0443\u0442")));
   }
   return ReactDOM.createPortal( /*#__PURE__*/React.createElement("div", {
     className: "overlay"
   }, /*#__PURE__*/React.createElement("div", {
     className: "body" + (props.type == "avg-stats" ? " avg-stats rainbow" : "")
-  }, /*#__PURE__*/React.createElement("header", null, /*#__PURE__*/React.createElement("h2", null, title), /*#__PURE__*/React.createElement("button", {
+  }, /*#__PURE__*/React.createElement("header", null, /*#__PURE__*/React.createElement("h2", null, title), props.type != "another-tab" && /*#__PURE__*/React.createElement("button", {
     id: "btn-close",
     className: "icon ml-auto",
     "aria-label": "\u041F\u043E\u0432\u0435\u0440\u043D\u0443\u0442\u0438\u0441\u044C \u0434\u043E \u0433\u0440\u0438",
